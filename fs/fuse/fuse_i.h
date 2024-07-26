@@ -268,6 +268,9 @@ struct fuse_file {
 	struct file *passthrough;
 	const struct cred *cred;
 #endif
+#ifdef CONFIG_FUSE_DAX_IOMAP
+	void *dax_iomap_meta;
+#endif
 
 	/** Has flock been performed on this file? */
 	bool flock:1;
@@ -1457,6 +1460,15 @@ static inline struct file *fuse_file_passthrough(struct fuse_file *ff)
 {
 #ifdef CONFIG_FUSE_PASSTHROUGH
 	return ff->passthrough;
+#else
+	return NULL;
+#endif
+}
+
+static inline struct file *fuse_file_dax_iomap(struct fuse_file *ff)
+{
+#ifdef CONFIG_FUSE_DAX_IOMAP
+	return ff->dax_iomap_meta;
 #else
 	return NULL;
 #endif

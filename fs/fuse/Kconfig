@@ -63,3 +63,15 @@ config FUSE_PASSTHROUGH
 	  to be performed directly on a backing file.
 
 	  If you want to allow passthrough operations, answer Y.
+
+config FUSE_DAX_IOMAP
+	bool "FUSE support for fs-dax filesystems backed by devdax"
+	default y
+	depends on FUSE_FS
+	depends on DEV_DAX_IOMAP
+	select FS_STACK
+	help
+	  This allows file systems that use a devdax device as backing store to
+	  read/write/mmap directly to the memory
+
+	  If you want to allow passthrough operations, answer Y.

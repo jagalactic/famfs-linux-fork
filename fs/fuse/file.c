@@ -22,6 +22,16 @@
 #include <linux/splice.h>
 #include <linux/task_io_accounting_ops.h>
 
+/*
+ * dax_iomap stuff. Might move to a separate source file later.
+ */
+
+static int fuse_iomap_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	return -EINVAL;
+}
+/* End dax_iomap */
+
 static int fuse_send_open(struct fuse_mount *fm, u64 nodeid,
 			  unsigned int open_flags, int opcode,
 			  struct fuse_open_out *outargp)
@@ -2544,6 +2554,8 @@ static int fuse_file_mmap(struct file *file, struct vm_area_struct *vma)
 	 */
 	if (fuse_file_passthrough(ff))
 		return fuse_passthrough_mmap(file, vma);
+	else if (fuse_file_dax_iomap(ff))
+		return fuse_iomap_mmap(file, vma);
 	else if (fuse_inode_backing(get_fuse_inode(inode)))
 		return -ENODEV;
 
