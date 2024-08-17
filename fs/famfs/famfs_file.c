@@ -28,13 +28,20 @@ MODULE_PARM_DESC(famfs_kabi_version, "famfs kernel abi version");
  * @ext_count:  The number of extents needed
  */
 static int
-famfs_meta_alloc(struct famfs_file_meta **metap, size_t ext_count)
+famfs_meta_alloc_v1(struct famfs_file_meta **metap, size_t ext_count)
 {
 	struct famfs_file_meta *meta;
 
-	meta = kzalloc(struct_size(meta, tfs_extents, ext_count), GFP_KERNEL);
+	meta = kzalloc(sizeof(*meta), GFP_KERNEL);
 	if (!meta)
 		return -ENOMEM;
+
+	/* v1 alloc only handles simple extents */
+	meta->se = kzalloc(sizeof(*(meta->se)), GFP_KERNEL);
+	if (!meta->se) {
+		kfree(meta);
+		return -ENOMEM;
+	}
 
 	meta->tfs_extent_ct = ext_count;
 	meta->error = false;
@@ -46,11 +53,26 @@ famfs_meta_alloc(struct famfs_file_meta **metap, size_t ext_count)
 static void
 famfs_meta_free(struct famfs_file_meta *map)
 {
+	if (map) {
+		switch (map->tfs_extent_type) {
+		case SIMPLE_DAX_EXTENT:
+			kfree(map->se);
+			break;
+		case STRIPED_EXTENT:
+			if (map->fe)
+				kfree(map->fe->se_strips);
+
+			kfree(map->fe);
+			break;
+		default:
+			break;
+		}
+	}
 	kfree(map);
 }
 
 /**
- * famfs_file_init_dax() - FAMFSIOC_MAP_CREATE ioctl handler
+ * famfs_file_init_dax_v1() - FAMFSIOC_MAP_CREATE ioctl handler
  * @file: the un-initialized file
  * @arg:  ptr to struct mcioc_map in user space
  *
@@ -58,7 +80,7 @@ famfs_meta_free(struct famfs_file_meta *map)
  * is called by famfs_file_ioctl() to setup the mapping and set the file size.
  */
 static int
-famfs_file_init_dax(struct file *file, void __user *arg)
+famfs_file_init_dax_v1(struct file *file, void __user *arg)
 {
 	struct famfs_file_meta *meta = NULL;
 	struct famfs_ioc_map imap;
@@ -97,7 +119,7 @@ famfs_file_init_dax(struct file *file, void __user *arg)
 		goto errout;
 	}
 
-	rc = famfs_meta_alloc(&meta, ext_count);
+	rc = famfs_meta_alloc_v1(&meta, ext_count);
 	if (rc)
 		goto errout;
 
@@ -119,8 +141,9 @@ famfs_file_init_dax(struct file *file, void __user *arg)
 			goto errout;
 		}
 
-		meta->tfs_extents[i].offset = offset;
-		meta->tfs_extents[i].len    = len;
+		meta->se[i].dev_index  = 0; /* must be zero for now */
+		meta->se[i].ext_offset = offset;
+		meta->se[i].ext_len    = len;
 
 		/* All extent addresses/offsets must be 2MiB aligned,
 		 * and all but the last length must be a 2MiB multiple.
@@ -173,6 +196,234 @@ famfs_file_init_dax(struct file *file, void __user *arg)
 	return rc;
 }
 
+/**********************************************************************************/
+/**
+ * famfs_meta_alloc() - Allocate famfs file metadata
+ * @metap:       Pointer to an mcache_map_meta pointer
+ * @ext_count:  The number of extents needed
+ */
+static int
+famfs_meta_alloc_v2(
+	struct famfs_ioc_fmap *fmap,
+	struct famfs_file_meta **metap,
+	enum famfs_extent_type ext_type)
+{
+	struct famfs_ioc_fmap_extent *ioc_interleaved_ext = NULL;
+	struct famfs_file_meta *meta = NULL;
+	size_t extent_total = 0;
+	int i, j;
+	int rc;
+
+	if (fmap->fioc_nextents > FAMFS_MAX_EXTENTS)
+		return -EINVAL;
+
+	meta = kzalloc(sizeof(*meta), GFP_KERNEL);
+	if (!meta)
+		return -ENOMEM;
+
+	meta->tfs_extent_ct = fmap->fioc_nextents;
+	meta->error = false;
+
+	meta->file_type = fmap->fioc_file_type;
+	meta->file_size = fmap->fioc_file_size;
+
+	switch (fmap->fioc_ext_type) {
+	case SIMPLE_DAX_EXTENT: {
+		struct famfs_extent tmp_ext_list[FAMFS_MAX_EXTENTS];
+
+		meta->se = kcalloc(fmap->fioc_nextents, sizeof(struct famfs_extent),
+				   GFP_KERNEL);
+		if (!meta->se) {
+			rc = -ENOMEM;
+			goto errout;
+		}
+
+		if (fmap->fioc_nextents > FAMFS_MAX_EXTENTS) {
+			rc = -EINVAL;
+			goto errout;
+		}
+		rc = copy_from_user(tmp_ext_list, fmap->kse,
+				fmap->fioc_nextents * sizeof(struct famfs_extent));
+				    
+		for (i = 0; i < fmap->fioc_nextents; i++) {
+			meta->se[i].dev_index  = 0; /* must be zero for now */
+			meta->se[i].ext_offset = tmp_ext_list[i].offset;
+			meta->se[i].ext_len    = tmp_ext_list[i].len;
+
+			extent_total += meta->se[i].ext_len;
+		}
+		break;
+	}
+
+	case STRIPED_EXTENT: {
+		struct famfs_ioc_interleaved_ext tmp_ie[FAMFS_MAX_EXTENTS];
+		int errs = 0;
+
+		if (fmap->fioc_nextents > FAMFS_IOC_MAX_INTERLEAVED_EXTENTS) {
+			rc = -EINVAL;
+			goto errout;
+		}
+
+		meta->fe = kcalloc(fmap->fioc_nextents, sizeof(struct famfs_meta_extent),
+				   GFP_KERNEL);
+		if (!meta->fe) {
+			rc = -ENOMEM;
+			goto errout;
+		}
+
+		/* Get the full list of famfs_ioc_interleaved_ext structs */
+		rc = copy_from_user(tmp_ie, fmap->kie,
+				    (fmap->fioc_nextents *
+				     sizeof(struct famfs_ioc_interleaved_ext)));
+
+		/* Each extent is a full strip set, with an internal extent for each
+		 * strip. So normally there will just be one striped extent
+		 */
+		for (i = 0; i < fmap->fioc_nextents; i++) {
+			u64 nstrips    = tmp_ie[i].ie_nstrips;
+
+			if (nstrips > FAMFS_MAX_INTERLEAVED_STRIPS) {
+				pr_err("%s: nstrips %lld exceeds max %d\n",
+				       __func__, nstrips,
+				       FAMFS_MAX_INTERLEAVED_STRIPS);
+				errs++;
+			}
+
+			ioc_interleaved_ext = kcalloc(fmap->fioc_nextents,
+						      sizeof(*ioc_interleaved_ext),
+						      GFP_KERNEL);
+			if (!ioc_interleaved_ext) {
+				rc = -ENOMEM;
+				goto errout;
+			}
+
+			/* Get the strip list for this interleaved set */
+			rc = copy_from_user(&ioc_interleaved_ext, &tmp_ie[i].ie_strips,
+				       (tmp_ie[i].ie_nstrips *
+					sizeof(struct famfs_ioc_fmap_extent)));
+			meta->fe->se_chunk_size = tmp_ie[i].ie_chunk_size;
+			meta->fe->se_nstrips    = tmp_ie[i].ie_nstrips;
+
+			/* Save and validate strips */
+			for (j = 0; j < nstrips; j++) {
+				u64 devindex = ioc_interleaved_ext[j].devindex;
+				u64 offset   = ioc_interleaved_ext[j].offset;
+				u64 len      = ioc_interleaved_ext[j].len;
+
+				if (devindex != 0) {
+					pr_err("%s: devindex must currently be zero\n",
+					       __func__);
+					errs++;
+				}
+				/* Check alignment requirements */
+				if (!IS_ALIGNED(offset, PMD_SIZE)) {
+					pr_err("%s: error strip %d offset %llx not aligned\n",
+					       __func__, i, offset);
+					errs++;
+				}
+				if (!IS_ALIGNED(len, PMD_SIZE)) {
+					pr_err("%s: error strip %d length %lld not aligned\n",
+					       __func__, i, len);
+					errs++;
+				}
+
+				meta->fe->se_strips[j].dev_index  = devindex;
+				meta->fe->se_strips[j].ext_offset = offset;
+				meta->fe->se_strips[j].ext_len    = len;
+				extent_total += len;
+			}
+		}
+		if (errs > 0) {
+			rc = -EINVAL;
+			goto errout;
+		}
+		
+		break;
+	}
+
+	default:
+		return -EINVAL;
+	  
+	}
+
+	/* More sanity checks */
+	if (extent_total < meta->file_size) {
+		pr_err("%s: file size %ld larger than ext list size %ld\n",
+		       __func__, meta->file_size, extent_total);
+		rc = -1;
+		goto errout;
+	}
+
+	*metap = meta;
+
+	return 0;
+errout:
+	famfs_meta_free(meta);
+	kfree(ioc_interleaved_ext);
+	return rc;
+}
+
+static int
+famfs_file_init_dax_v2(struct file *file, void __user *arg)
+{
+	struct famfs_file_meta *meta = NULL;
+	struct famfs_ioc_fmap fmap;
+	struct famfs_fs_info *fsi;
+	struct super_block *sb;
+	struct inode *inode;
+	int rc;
+
+	inode = file_inode(file);
+	if (!inode) {
+		rc = -EBADF;
+		goto errout;
+	}
+
+	if (inode->i_private)
+		return -EEXIST;
+
+	sb  = inode->i_sb;
+	fsi = sb->s_fs_info;
+	if (fsi->deverror)
+		return -ENODEV;
+
+	rc = copy_from_user(&fmap, arg, sizeof(fmap));
+	if (rc)
+		return -EFAULT;
+
+	if (fmap.fioc_nextents < 1) {
+		rc = -EINVAL;
+		goto errout;
+	}
+
+	if (fmap.fioc_nextents > FAMFS_MAX_EXTENTS) {
+		rc = -E2BIG;
+		goto errout;
+	}
+
+	/* This fully populates the metadata, unlike the v1 allocator */
+	rc = famfs_meta_alloc_v2(&fmap, &meta, fmap.fioc_ext_type);
+	if (rc)
+		goto errout;
+
+	/* Publish the famfs metadata on inode->i_private */
+	inode_lock(inode);
+	if (inode->i_private) {
+		rc = -EEXIST; /* file already has famfs metadata */
+	} else {
+		inode->i_private = meta;
+		i_size_write(inode, meta->file_size);
+		inode->i_flags |= S_DAX;
+	}
+	inode_unlock(inode);
+
+ errout:
+	if (rc)
+		famfs_meta_free(meta);
+
+	return rc;
+}
+
 /**
  * famfs_file_ioctl() - Top-level famfs file ioctl handler
  * @file: the file
@@ -195,7 +446,7 @@ famfs_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 
 	case FAMFSIOC_MAP_CREATE:
-		rc = famfs_file_init_dax(file, (void *)arg);
+		rc = famfs_file_init_dax_v1(file, (void *)arg);
 		break;
 
 	case FAMFSIOC_MAP_GET: {
@@ -225,14 +476,35 @@ famfs_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case FAMFSIOC_MAP_GETEXT: {
 		struct inode *inode = file_inode(file);
 		struct famfs_file_meta *meta = inode->i_private;
+		struct famfs_extent ext_list[FAMFS_MAX_EXTENTS] = { 0 };
+		int i;
+
+		/* This legacy ioctl only supports simple extent lists */
+		if (meta->tfs_extent_type != SIMPLE_DAX_EXTENT)
+			return -EINVAL;
+
+		if (meta->tfs_extent_ct > FAMFS_MAX_EXTENTS)
+			return -EINVAL;
+
+		for (i = 0; i < meta->tfs_extent_ct; i++) {
+			ext_list[i].offset = meta->se[i].ext_offset;
+			ext_list[i].len = meta->se[i].ext_len;
+		}
 
 		if (meta)
-			rc = copy_to_user((void __user *)arg, meta->tfs_extents,
+			rc = copy_to_user((void __user *)arg, ext_list,
 			      meta->tfs_extent_ct * sizeof(struct famfs_extent));
 		else
 			rc = -EINVAL;
 		break;
 	}
+	case FAMFSIOC_MAP_CREATE_V2:
+		rc = famfs_file_init_dax_v2(file, (void *)arg);
+		break;
+
+	case FAMFSIOC_MAP_GET_V2:
+	case FAMFSIOC_MAP_GETEXT_V2:
+
 	default:
 		rc = -ENOTTY;
 		break;
@@ -249,6 +521,78 @@ famfs_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
  */
 
 static ssize_t famfs_file_invalid(struct inode *inode);
+
+static int
+famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
+			 loff_t file_offset, off_t len, unsigned int flags)
+{
+	struct famfs_fs_info  *fsi = inode->i_sb->s_fs_info;
+	struct famfs_file_meta *meta = inode->i_private;
+	loff_t local_offset = file_offset;
+	int i, j;
+
+	if (meta->tfs_extent_type != STRIPED_EXTENT) {
+		pr_err("%s: bad extent type\n", __func__);
+		goto err_out;
+	}
+
+	if (fsi->deverror || famfs_file_invalid(inode))
+		goto err_out;
+
+	iomap->offset = file_offset;
+
+	for (i = 0; i < meta->tfs_extent_ct; i++) {
+		/* TODO: check devindex too */
+		struct famfs_fmap_extent *fei = &meta->fe[i];
+		u64 chunk_size = fei->se_chunk_size;
+		u64 nstrips = fei->se_nstrips;
+		//u64 stripe_size = chunk_size * nstrips;
+		u64 ext_size = 0;
+
+		for (j = 0; j < nstrips; j++)
+			ext_size += fei->se_strips[j].ext_len;
+
+		ext_size = min_t(u64, ext_size, meta->file_size);
+
+		if (ext_size == 0)
+			goto err_out;
+
+		/* Is the data is in this striped extent? */
+		if (local_offset < ext_size) {
+			u64 chunk_num       = local_offset / chunk_size;
+			u64 stripe_num      = chunk_num / nstrips;
+			u64 strip_num       = chunk_num % nstrips;
+			u64 chunk_offset    = local_offset % chunk_size;
+			u64 chunk_remainder = chunk_size - chunk_offset;
+			u64 strip_offset    = chunk_offset + (stripe_num * chunk_size);
+			u64 strip_dax_ofs   = fei->se_strips[strip_num].ext_offset;
+
+			iomap->addr    = strip_dax_ofs + strip_offset;
+			iomap->offset  = file_offset;
+			iomap->length  = min_t(loff_t, len, chunk_remainder);
+			iomap->dax_dev = fsi->dax_devp;
+			iomap->type    = IOMAP_MAPPED;
+			iomap->flags   = flags;
+
+			return 0;
+		}
+		local_offset -= ext_size; /* offset is beyond this striped extent */
+	}
+
+ err_out:
+	/* We fell out the end of the extent list.
+	 * Set iomap to zero length in this case, and return 0
+	 * This just means that the r/w is past EOF
+	 */
+	iomap->addr    = 0; /* there is no valid dax device offset */
+	iomap->offset  = file_offset; /* file offset */
+	iomap->length  = 0; /* this had better result in no access to dax mem */
+	iomap->dax_dev = fsi->dax_devp;
+	iomap->type    = IOMAP_MAPPED;
+	iomap->flags   = flags;
+
+	return 0;
+}
 
 /**
  * famfs_meta_to_dax_offset() - Resolve (file, offset, len) to (daxdev, offset, len)
@@ -276,19 +620,22 @@ static int
 famfs_meta_to_dax_offset(struct inode *inode, struct iomap *iomap,
 			 loff_t file_offset, off_t len, unsigned int flags)
 {
-	struct famfs_file_meta *meta = inode->i_private;
-	int i;
-	loff_t local_offset = file_offset;
 	struct famfs_fs_info  *fsi = inode->i_sb->s_fs_info;
+	struct famfs_file_meta *meta = inode->i_private;
+	loff_t local_offset = file_offset;
+	int i;
 
+	if (meta->tfs_extent_type == STRIPED_EXTENT)
+		return famfs_meta_to_dax_offset_v2(inode, iomap, file_offset, len, flags);
 	if (fsi->deverror || famfs_file_invalid(inode))
 		goto err_out;
 
 	iomap->offset = file_offset;
 
 	for (i = 0; i < meta->tfs_extent_ct; i++) {
-		loff_t dax_ext_offset = meta->tfs_extents[i].offset;
-		loff_t dax_ext_len    = meta->tfs_extents[i].len;
+		/* TODO: check devindex too */
+		loff_t dax_ext_offset = meta->se[i].ext_offset;
+		loff_t dax_ext_len    = meta->se[i].ext_len;
 
 		if ((dax_ext_offset == 0) &&
 		    (meta->file_type != FAMFS_SUPERBLOCK))

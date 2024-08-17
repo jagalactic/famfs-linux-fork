@@ -15,6 +15,18 @@
 
 extern const struct file_operations famfs_file_operations;
 
+struct famfs_meta_extent {
+	u64 dev_index;
+	u64 ext_offset;
+	u64 ext_len;
+};
+
+struct famfs_fmap_extent {
+	u64 se_nstrips;
+	u64 se_chunk_size;
+	struct famfs_meta_extent *se_strips;
+};
+
 /*
  * Each famfs dax file has this hanging from its inode->i_private.
  */
@@ -24,7 +36,11 @@ struct famfs_file_meta {
 	size_t                 file_size;
 	enum famfs_extent_type tfs_extent_type;
 	size_t                 tfs_extent_ct;
-	struct famfs_extent    tfs_extents[];
+	union {
+		struct famfs_meta_extent  *se;
+		struct famfs_fmap_extent *fe;
+		//struct famfs_extent    tfs_extents[];
+	};
 };
 
 struct famfs_mount_opts {
