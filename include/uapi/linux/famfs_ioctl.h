@@ -14,7 +14,7 @@
 #include <linux/ioctl.h>
 #include <linux/uuid.h>
 
-#define FAMFS_KABI_VERSION 42
+#define FAMFS_KABI_VERSION 43
 #define FAMFS_MAX_EXTENTS 2
 #define FAMFS_MAX_INTERLEAVED_STRIPS 16
 #define FAMFS_IOC_MAX_INTERLEAVED_EXTENTS 1
@@ -60,7 +60,7 @@ enum famfs_ioc_ext_type {
 	FAMFS_IOC_EXT_INTERLEAVE,
 };
 
-struct famfs_ioc_fmap_extent {
+struct famfs_ioc_simple_extent {
 	__u64 devindex;
 	__u64 offset;
 	__u64 len;
@@ -69,7 +69,7 @@ struct famfs_ioc_fmap_extent {
 struct famfs_ioc_interleaved_ext {
 	__u64 ie_nstrips;
 	__u64 ie_chunk_size;
-	struct famfs_ioc_fmap_extent *ie_strips;
+	struct famfs_ioc_simple_extent *ie_strips;
 };
 
 struct famfs_ioc_fmap {
@@ -78,7 +78,7 @@ struct famfs_ioc_fmap {
 	__u32 fioc_ext_type; /* enum famfs_log_ext_type */
 	__u32 fioc_nextents;
 	union {
-		struct famfs_ioc_fmap_extent *kse;     /* simple extent list */
+		struct famfs_ioc_simple_extent *kse;     /* simple extent list */
 		struct famfs_ioc_interleaved_ext *kie; /* interleaved ext list */
 		/* will include the other extent types eventually */
 	};
@@ -92,7 +92,7 @@ struct famfs_ioc_fmap {
 #define FAMFSIOC_MAP_GETEXT    _IOR(FAMFSIOC_MAGIC, 0x52, struct famfs_extent)
 #define FAMFSIOC_NOP           _IO(FAMFSIOC_MAGIC,  0x53)
 #define FAMFSIOC_MAP_CREATE_V2 _IOW(FAMFSIOC_MAGIC, 0x54, struct famfs_ioc_fmap)
-#define FAMFSIOC_MAP_GET_V2    _IOR(FAMFSIOC_MAGIC, 0x55, struct famfs_ioc_fmap_extent)
-#define FAMFSIOC_MAP_GETEXT_V2 _IOR(FAMFSIOC_MAGIC, 0x56, struct famfs_extent)
+//#define FAMFSIOC_MAP_GET_V2    _IOR(FAMFSIOC_MAGIC, 0x55, struct famfs_ioc_fmap_extent)
+//#define FAMFSIOC_MAP_GETEXT_V2 _IOR(FAMFSIOC_MAGIC, 0x56, struct famfs_extent)
 
 #endif /* FAMFS_IOCTL_H */

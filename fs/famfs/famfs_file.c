@@ -208,7 +208,6 @@ famfs_meta_alloc_v2(
 	struct famfs_file_meta **metap,
 	enum famfs_extent_type ext_type)
 {
-	struct famfs_ioc_fmap_extent *ioc_interleaved_ext = NULL;
 	struct famfs_file_meta *meta = NULL;
 	size_t extent_total = 0;
 	int i, j;
@@ -229,7 +228,7 @@ famfs_meta_alloc_v2(
 
 	switch (fmap->fioc_ext_type) {
 	case SIMPLE_DAX_EXTENT: {
-		struct famfs_extent tmp_ext_list[FAMFS_MAX_EXTENTS];
+		struct famfs_ioc_simple_extent tmp_ext_list[FAMFS_MAX_EXTENTS];
 
 		meta->se = kcalloc(fmap->fioc_nextents, sizeof(struct famfs_extent),
 				   GFP_KERNEL);
@@ -246,9 +245,13 @@ famfs_meta_alloc_v2(
 				fmap->fioc_nextents * sizeof(struct famfs_extent));
 				    
 		for (i = 0; i < fmap->fioc_nextents; i++) {
-			meta->se[i].dev_index  = 0; /* must be zero for now */
+			meta->se[i].dev_index  = tmp_ext_list[i].devindex;
 			meta->se[i].ext_offset = tmp_ext_list[i].offset;
 			meta->se[i].ext_len    = tmp_ext_list[i].len;
+
+			pr_notice("%s: devindex=%lld ofs=%lld len=%lld\n",
+				  __func__, meta->se[i].dev_index,
+				  meta->se[i].ext_offset, meta->se[i].ext_len);
 
 			extent_total += meta->se[i].ext_len;
 		}
@@ -264,7 +267,7 @@ famfs_meta_alloc_v2(
 			goto errout;
 		}
 
-		meta->fe = kcalloc(fmap->fioc_nextents, sizeof(struct famfs_meta_extent),
+		meta->fe = kcalloc(fmap->fioc_nextents, sizeof(*(meta->fe)),
 				   GFP_KERNEL);
 		if (!meta->fe) {
 			rc = -ENOMEM;
@@ -280,6 +283,8 @@ famfs_meta_alloc_v2(
 		 * strip. So normally there will just be one striped extent
 		 */
 		for (i = 0; i < fmap->fioc_nextents; i++) {
+			struct famfs_ioc_simple_extent *se;
+
 			u64 nstrips    = tmp_ie[i].ie_nstrips;
 
 			if (nstrips > FAMFS_MAX_INTERLEAVED_STRIPS) {
@@ -289,26 +294,25 @@ famfs_meta_alloc_v2(
 				errs++;
 			}
 
-			ioc_interleaved_ext = kcalloc(fmap->fioc_nextents,
-						      sizeof(*ioc_interleaved_ext),
-						      GFP_KERNEL);
-			if (!ioc_interleaved_ext) {
+			se = kcalloc(fmap->fioc_nextents, sizeof(*se), GFP_KERNEL);
+			if (!se) {
 				rc = -ENOMEM;
 				goto errout;
 			}
 
 			/* Get the strip list for this interleaved set */
-			rc = copy_from_user(&ioc_interleaved_ext, &tmp_ie[i].ie_strips,
-				       (tmp_ie[i].ie_nstrips *
-					sizeof(struct famfs_ioc_fmap_extent)));
+			rc = copy_from_user(se,
+					    &tmp_ie[i].ie_strips,
+					    (tmp_ie[i].ie_nstrips *
+					     sizeof(struct famfs_ioc_simple_extent)));
 			meta->fe->se_chunk_size = tmp_ie[i].ie_chunk_size;
 			meta->fe->se_nstrips    = tmp_ie[i].ie_nstrips;
 
 			/* Save and validate strips */
 			for (j = 0; j < nstrips; j++) {
-				u64 devindex = ioc_interleaved_ext[j].devindex;
-				u64 offset   = ioc_interleaved_ext[j].offset;
-				u64 len      = ioc_interleaved_ext[j].len;
+				u64 devindex = se[j].devindex;
+				u64 offset   = se[j].offset;
+				u64 len      = se[j].len;
 
 				if (devindex != 0) {
 					pr_err("%s: devindex must currently be zero\n",
@@ -332,6 +336,7 @@ famfs_meta_alloc_v2(
 				meta->fe->se_strips[j].ext_len    = len;
 				extent_total += len;
 			}
+			kfree(se);
 		}
 		if (errs > 0) {
 			rc = -EINVAL;
@@ -359,7 +364,6 @@ famfs_meta_alloc_v2(
 	return 0;
 errout:
 	famfs_meta_free(meta);
-	kfree(ioc_interleaved_ext);
 	return rc;
 }
 
@@ -502,9 +506,10 @@ famfs_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		rc = famfs_file_init_dax_v2(file, (void *)arg);
 		break;
 
+#if 0
 	case FAMFSIOC_MAP_GET_V2:
 	case FAMFSIOC_MAP_GETEXT_V2:
-
+#endif
 	default:
 		rc = -ENOTTY;
 		break;
@@ -543,10 +548,9 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 
 	for (i = 0; i < meta->tfs_extent_ct; i++) {
 		/* TODO: check devindex too */
-		struct famfs_fmap_extent *fei = &meta->fe[i];
+		struct famfs_meta_interleaved_ext *fei = &meta->fe[i];
 		u64 chunk_size = fei->se_chunk_size;
 		u64 nstrips = fei->se_nstrips;
-		//u64 stripe_size = chunk_size * nstrips;
 		u64 ext_size = 0;
 
 		for (j = 0; j < nstrips; j++)
