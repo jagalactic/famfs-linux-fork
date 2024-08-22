@@ -230,7 +230,7 @@ famfs_meta_alloc_v2(
 	case SIMPLE_DAX_EXTENT: {
 		struct famfs_ioc_simple_extent tmp_ext_list[FAMFS_MAX_EXTENTS];
 
-		meta->se = kcalloc(fmap->fioc_nextents, sizeof(struct famfs_extent),
+		meta->se = kcalloc(fmap->fioc_nextents, sizeof(*fmap->kse),
 				   GFP_KERNEL);
 		if (!meta->se) {
 			rc = -ENOMEM;
@@ -242,8 +242,12 @@ famfs_meta_alloc_v2(
 			goto errout;
 		}
 		rc = copy_from_user(tmp_ext_list, fmap->kse,
-				fmap->fioc_nextents * sizeof(struct famfs_extent));
-				    
+				    fmap->fioc_nextents * sizeof(*fmap->kse));
+		if (rc) {
+			pr_err("%s: copy_from_user rc=%d for extents\n",
+				 __func__, rc);
+			goto errout;
+		}
 		for (i = 0; i < fmap->fioc_nextents; i++) {
 			meta->se[i].dev_index  = tmp_ext_list[i].devindex;
 			meta->se[i].ext_offset = tmp_ext_list[i].offset;
@@ -278,7 +282,11 @@ famfs_meta_alloc_v2(
 		rc = copy_from_user(tmp_ie, fmap->kie,
 				    (fmap->fioc_nextents *
 				     sizeof(struct famfs_ioc_interleaved_ext)));
-
+		if (rc) {
+			pr_err("%s: copy_from_user rc=%d for interleaved extents\n",
+				 __func__, rc);
+			goto errout;
+		}
 		/* Each extent is a full strip set, with an internal extent for each
 		 * strip. So normally there will just be one striped extent
 		 */
@@ -305,6 +313,11 @@ famfs_meta_alloc_v2(
 					    &tmp_ie[i].ie_strips,
 					    (tmp_ie[i].ie_nstrips *
 					     sizeof(struct famfs_ioc_simple_extent)));
+			if (rc) {
+				pr_err("%s: copy_from_user rc=%d for strips\n",
+					 __func__, rc);
+				goto errout;
+			}
 			meta->fe->se_chunk_size = tmp_ie[i].ie_chunk_size;
 			meta->fe->se_nstrips    = tmp_ie[i].ie_nstrips;
 

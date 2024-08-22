@@ -92,7 +92,8 @@ struct famfs_ioc_fmap {
 #define FAMFSIOC_MAP_GETEXT    _IOR(FAMFSIOC_MAGIC, 0x52, struct famfs_extent)
 #define FAMFSIOC_NOP           _IO(FAMFSIOC_MAGIC,  0x53)
 #define FAMFSIOC_MAP_CREATE_V2 _IOW(FAMFSIOC_MAGIC, 0x54, struct famfs_ioc_fmap)
-//#define FAMFSIOC_MAP_GET_V2    _IOR(FAMFSIOC_MAGIC, 0x55, struct famfs_ioc_fmap_extent)
-//#define FAMFSIOC_MAP_GETEXT_V2 _IOR(FAMFSIOC_MAGIC, 0x56, struct famfs_extent)
-
+#if 0
+#define FAMFSIOC_MAP_GET_V2    _IOR(FAMFSIOC_MAGIC, 0x55, struct famfs_ioc_fmap_extent)
+#define FAMFSIOC_MAP_GETEXT_V2 _IOR(FAMFSIOC_MAGIC, 0x56, struct famfs_extent)
+#endif
 #endif /* FAMFS_IOCTL_H */
