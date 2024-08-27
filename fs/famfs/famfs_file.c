@@ -441,6 +441,54 @@ famfs_file_init_dax_v2(struct file *file, void __user *arg)
 	return rc;
 }
 
+
+static int
+famfs_prepare_getmap_v2(
+	struct inode *inode,
+	struct famfs_ioc_get_fmap *ifmap)
+{
+	struct famfs_file_meta *meta = inode->i_private;
+	int i;
+
+	memset(ifmap, 0, sizeof(*ifmap));
+
+	ifmap->iocmap.fioc_file_size = meta->file_size;
+	ifmap->iocmap.fioc_file_type = meta->file_type;
+	ifmap->iocmap.fioc_ext_type  = meta->tfs_extent_type;
+	ifmap->iocmap.fioc_nextents  = meta->tfs_extent_ct;
+
+	switch (meta->tfs_extent_type) {
+	case FAMFS_IOC_EXT_SIMPLE:
+		for (i = 0; i < meta->tfs_extent_ct; i++) {
+			ifmap->ikse[i].devindex = meta->se[i].dev_index;
+			ifmap->ikse[i].offset   = meta->se[i].ext_offset;
+			ifmap->ikse[i].len      = meta->se[i].ext_len;
+		}
+		break;
+	case FAMFS_IOC_EXT_INTERLEAVE:
+		/* We only support one striped "extent", but it has multiple
+		 * simple extents to describe its strips
+		 */
+		if (meta->tfs_extent_ct != 1)
+			return -EINVAL;
+
+		ifmap->ks.ikie.ie_nstrips = meta->fe->se_nstrips;
+		ifmap->ks.ikie.ie_chunk_size = meta->fe->se_chunk_size;
+
+		for (i = 0; i < meta->fe->se_nstrips; i++) {
+			struct famfs_meta_simple_ext *strips = meta->fe->se_strips;
+
+			ifmap->ks.kie_strips[i].devindex = strips[i].dev_index;
+			ifmap->ks.kie_strips[i].offset   = strips[i].ext_offset;
+			ifmap->ks.kie_strips[i].len      = strips[i].ext_len;
+		}
+		break;
+	default:
+		return -1;
+	}
+	return 0;
+}
+
 /**
  * famfs_file_ioctl() - Top-level famfs file ioctl handler
  * @file: the file
@@ -519,10 +567,17 @@ famfs_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		rc = famfs_file_init_dax_v2(file, (void *)arg);
 		break;
 
-#if 0
-	case FAMFSIOC_MAP_GET_V2:
-	case FAMFSIOC_MAP_GETEXT_V2:
-#endif
+	case FAMFSIOC_MAP_GET_V2: {
+		struct famfs_ioc_get_fmap ifmap;
+
+		rc = famfs_prepare_getmap_v2(inode, &ifmap);
+		if (rc)
+			return rc;
+
+		rc = copy_to_user((void __user *)arg, &ifmap, sizeof(ifmap));
+		break;
+	}
+
 	default:
 		rc = -ENOTTY;
 		break;
