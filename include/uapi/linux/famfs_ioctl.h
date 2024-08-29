@@ -16,9 +16,9 @@
 
 #define FAMFS_KABI_VERSION 43
 #define FAMFS_MAX_EXTENTS 2
-#define FAMFS_MAX_INTERLEAVED_STRIPS 16
+#define FAMFS_MAX_STRIPS 16
 #define FAMFS_IOC_MAX_INTERLEAVED_EXTENTS 1
-#define FAMFS_IOC_MAX_INTERLEAVED_STRIPS 8
+/*#define FAMFS_IOC_MAX_INTERLEAVED_STRIPS 8*/
 
 /* We anticipate the possiblity of supporting additional types of extents */
 enum famfs_extent_type {
@@ -89,7 +89,7 @@ struct famfs_ioc_fmap {
  *
  * This structure is a defined size, and can be used to copyout the file map, subject
  * to the following constraints:
- * * No more than FAMFS_MAX_EXTENTS simple extents
+ * * No more than FAMFS_MAX_STRIPS simple extents
  * * No moer than one striped extent
  * * Striped extent contains no more tahn FAMFS_MAX_EXTENTS strip extents
  */
@@ -99,7 +99,7 @@ struct famfs_ioc_get_fmap {
 		struct famfs_ioc_simple_extent ikse[FAMFS_MAX_EXTENTS];
 		struct {
 			struct famfs_ioc_interleaved_ext ikie;
-			struct famfs_ioc_simple_extent kie_strips[FAMFS_MAX_EXTENTS];
+			struct famfs_ioc_simple_extent kie_strips[FAMFS_MAX_STRIPS];
 		} ks;
 	};
 };
