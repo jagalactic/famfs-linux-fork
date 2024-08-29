@@ -76,7 +76,10 @@ struct famfs_ioc_fmap {
 	__u64 fioc_file_size;
 	enum famfs_file_type fioc_file_type;
 	__u32 fioc_ext_type; /* enum famfs_log_ext_type */
-	__u32 fioc_nextents;
+	union {  /* Make code a little more readable */
+		__u32 fioc_nextents;
+		__u32 fioc_nstripes;
+	};
 	union {
 		struct famfs_ioc_simple_extent *kse;     /* simple extent list */
 		struct famfs_ioc_interleaved_ext *kie; /* interleaved ext list */

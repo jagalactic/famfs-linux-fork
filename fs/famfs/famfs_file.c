@@ -276,7 +276,6 @@ famfs_meta_alloc_v2(
 	if (!meta)
 		return -ENOMEM;
 
-	meta->tfs_extent_ct = fmap->fioc_nextents;
 	meta->error = false;
 
 	meta->file_type = fmap->fioc_file_type;
@@ -286,6 +285,8 @@ famfs_meta_alloc_v2(
 	case SIMPLE_DAX_EXTENT: {
 		struct famfs_ioc_simple_extent tmp_ext_list[FAMFS_MAX_EXTENTS];
 		size_t ext_list_size;
+
+		meta->tfs_extent_ct = fmap->fioc_nextents;
 
 		meta->se = kcalloc(fmap->fioc_nextents, sizeof(*fmap->kse),
 				   GFP_KERNEL);
@@ -326,15 +327,14 @@ famfs_meta_alloc_v2(
 		struct famfs_ioc_interleaved_ext
 			tmp_ie[FAMFS_IOC_MAX_INTERLEAVED_EXTENTS];
 		struct famfs_ioc_simple_extent tmp_ext_list[FAMFS_MAX_STRIPS];
-		int nstripes = fmap->fioc_nextents;
+		int nstripes = fmap->fioc_nstripes;
 
 		if (nstripes > FAMFS_IOC_MAX_INTERLEAVED_EXTENTS) {
 			rc = -EINVAL;
 			goto errout;
 		}
 
-		pr_notice("stats: sizeof(famfs_ioc_interleaved_ext)=%ld nstripes=%d\n",
-			  sizeof(struct famfs_ioc_interleaved_ext), nstripes);
+		meta->fm_nstripes = nstripes;
 
 		/* Get the full list of famfs_ioc_interleaved_ext structs */
 		rc = copy_from_user(tmp_ie, fmap->kie,
@@ -520,10 +520,10 @@ famfs_prepare_getmap_v2(
 	ifmap->iocmap.fioc_file_size = meta->file_size;
 	ifmap->iocmap.fioc_file_type = meta->file_type;
 	ifmap->iocmap.fioc_ext_type  = meta->tfs_extent_type;
-	ifmap->iocmap.fioc_nextents  = meta->tfs_extent_ct;
 
 	switch (meta->tfs_extent_type) {
 	case FAMFS_IOC_EXT_SIMPLE:
+		ifmap->iocmap.fioc_nextents  = meta->tfs_extent_ct;
 		for (i = 0; i < meta->tfs_extent_ct; i++) {
 			ifmap->ikse[i].devindex = meta->se[i].dev_index;
 			ifmap->ikse[i].offset   = meta->se[i].ext_offset;
@@ -537,6 +537,7 @@ famfs_prepare_getmap_v2(
 		if (meta->tfs_extent_ct != 1)
 			return -EINVAL;
 
+		ifmap->iocmap.fioc_nstripes  = meta->fm_nstripes;
 		ifmap->ks.ikie.ie_nstrips = meta->fe->se_nstrips;
 		ifmap->ks.ikie.ie_chunk_size = meta->fe->se_chunk_size;
 
@@ -669,6 +670,7 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 	loff_t local_offset = file_offset;
 	int i, j;
 
+	/* This function is only for extent_type STRIPED_EXTENT */
 	if (meta->tfs_extent_type != STRIPED_EXTENT) {
 		pr_err("%s: bad extent type\n", __func__);
 		goto err_out;
@@ -679,7 +681,7 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 
 	iomap->offset = file_offset;
 
-	for (i = 0; i < meta->tfs_extent_ct; i++) {
+	for (i = 0; i < meta->fm_nstripes; i++) {
 		/* TODO: check devindex too */
 		struct famfs_meta_interleaved_ext *fei = &meta->fe[i];
 		u64 chunk_size = fei->se_chunk_size;

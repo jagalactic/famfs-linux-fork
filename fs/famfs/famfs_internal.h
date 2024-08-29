@@ -35,7 +35,10 @@ struct famfs_file_meta {
 	enum famfs_file_type   file_type;
 	size_t                 file_size;
 	enum famfs_extent_type tfs_extent_type;
-	size_t                 tfs_extent_ct;
+	union { /* This will make code a bit more readable */
+		size_t         tfs_extent_ct;
+		size_t         fm_nstripes;
+	};
 	union {
 		struct famfs_meta_simple_ext  *se;
 		struct famfs_meta_interleaved_ext *fe;
