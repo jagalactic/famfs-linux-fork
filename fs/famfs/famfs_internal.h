@@ -22,9 +22,9 @@ struct famfs_meta_simple_ext {
 };
 
 struct famfs_meta_interleaved_ext {
-	u64 se_nstrips;
-	u64 se_chunk_size;
-	struct famfs_meta_simple_ext *se_strips;
+	u64 ie_nstrips;
+	u64 ie_chunk_size;
+	struct famfs_meta_simple_ext *ie_strips;
 };
 
 /*
@@ -34,14 +34,14 @@ struct famfs_file_meta {
 	bool                   error;
 	enum famfs_file_type   file_type;
 	size_t                 file_size;
-	enum famfs_extent_type tfs_extent_type;
+	enum famfs_extent_type fm_extent_type;
 	union { /* This will make code a bit more readable */
-		size_t         tfs_extent_ct;
+		size_t         fm_nextents;
 		size_t         fm_nstripes;
 	};
 	union {
 		struct famfs_meta_simple_ext  *se;
-		struct famfs_meta_interleaved_ext *fe;
+		struct famfs_meta_interleaved_ext *ie;
 		//struct famfs_extent    tfs_extents[];
 	};
 };
