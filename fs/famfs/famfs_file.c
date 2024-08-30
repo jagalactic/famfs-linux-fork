@@ -233,6 +233,41 @@ dump_ioc_fmap(struct famfs_ioc_fmap *fmap)
 		  fmap->fioc_nextents);
 }
 
+static void
+famfs_dump_meta(
+	const char *msg,
+	const struct famfs_file_meta *meta)
+{
+	int i, j;
+
+	pr_notice("%s:%s", msg, __func__);
+	pr_notice("\ttype=%d size=%ld ext_type=%d\n",
+		  meta->file_type, meta->file_size, meta->tfs_extent_type);
+	switch(meta->tfs_extent_type) {
+	case SIMPLE_DAX_EXTENT:
+		for (j = 0 ; j < meta->tfs_extent_ct; j++) {
+			struct famfs_meta_simple_ext *ext = &meta->se[j];
+
+			pr_notice("\t\t%d: devindex=%lld offset=%lld len=%lld\n",
+				  j, ext->dev_index, ext->ext_offset, ext->ext_len);
+		}
+		break;
+	case STRIPED_EXTENT:
+		for (i = 0; i < meta->fm_nstripes; i++) {
+			pr_notice("\tstripe %d strips\n", i);
+			for (j = 0; j < meta->fe[i].se_nstrips; j++) {
+				struct famfs_meta_simple_ext *strip = &meta->fe[i].se_strips[j];
+
+				pr_notice("\t\t%d: devindex=%lld offset=%lld len=%lld\n",
+					  j, strip->dev_index, strip->ext_offset, strip->ext_len);
+			}
+		}
+		break;
+	default:
+		pr_notice("%s: invalid extent type\n", __func__);
+	}
+}
+
 static int
 famfs_check_ext_alignment(struct famfs_ioc_simple_extent *se)
 {
@@ -280,6 +315,7 @@ famfs_meta_alloc_v2(
 
 	meta->file_type = fmap->fioc_file_type;
 	meta->file_size = fmap->fioc_file_size;
+	meta->tfs_extent_type = fmap->fioc_ext_type;
 
 	switch (fmap->fioc_ext_type) {
 	case SIMPLE_DAX_EXTENT: {
@@ -299,14 +335,15 @@ famfs_meta_alloc_v2(
 			rc = -EINVAL;
 			goto errout;
 		}
+
 		ext_list_size = fmap->fioc_nextents * sizeof(*fmap->kse);
 		rc = copy_from_user(tmp_ext_list, fmap->kse, ext_list_size);
-		
 		if (rc) {
 			pr_err("%s: copy_from_user rc=%d nextents=%d size=%ld\n",
 			       __func__, rc, fmap->fioc_nextents, ext_list_size);
 			goto errout;
 		}
+
 		for (i = 0; i < fmap->fioc_nextents; i++) {
 			meta->se[i].dev_index  = tmp_ext_list[i].devindex;
 			meta->se[i].ext_offset = tmp_ext_list[i].offset;
@@ -392,7 +429,6 @@ famfs_meta_alloc_v2(
 			meta->fe[i].se_strips = kcalloc(tmp_ie[i].ie_nstrips,
 					sizeof(meta->fe[i].se_strips[0]), GFP_KERNEL);
 			if (!meta->fe[i].se_strips) {
-				
 				rc = -ENOMEM;
 				goto errout;
 			}
@@ -521,6 +557,9 @@ famfs_prepare_getmap_v2(
 	ifmap->iocmap.fioc_file_type = meta->file_type;
 	ifmap->iocmap.fioc_ext_type  = meta->tfs_extent_type;
 
+	pr_notice("%s: map:\n", __func__);
+	famfs_dump_meta(__func__, meta);
+
 	switch (meta->tfs_extent_type) {
 	case FAMFS_IOC_EXT_SIMPLE:
 		ifmap->iocmap.fioc_nextents  = meta->tfs_extent_ct;
@@ -530,6 +569,7 @@ famfs_prepare_getmap_v2(
 			ifmap->ikse[i].len      = meta->se[i].ext_len;
 		}
 		break;
+
 	case FAMFS_IOC_EXT_INTERLEAVE:
 		/* We only support one striped "extent", but it has multiple
 		 * simple extents to describe its strips
@@ -552,6 +592,7 @@ famfs_prepare_getmap_v2(
 	default:
 		return -1;
 	}
+
 	return 0;
 }
 
@@ -676,6 +717,8 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 		goto err_out;
 	}
 
+	famfs_dump_meta(__func__, meta);
+
 	if (fsi->deverror || famfs_file_invalid(inode))
 		goto err_out;
 
@@ -691,6 +734,7 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 		for (j = 0; j < nstrips; j++)
 			ext_size += fei->se_strips[j].ext_len;
 
+		pr_notice("%s: ext_size=%lld\n", __func__, ext_size);
 		ext_size = min_t(u64, ext_size, meta->file_size);
 
 		if (ext_size == 0)
@@ -699,12 +743,20 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 		/* Is the data is in this striped extent? */
 		if (local_offset < ext_size) {
 			u64 chunk_num       = local_offset / chunk_size;
+			u64 chunk_offset    = local_offset % chunk_size;
 			u64 stripe_num      = chunk_num / nstrips;
 			u64 strip_num       = chunk_num % nstrips;
-			u64 chunk_offset    = local_offset % chunk_size;
 			u64 chunk_remainder = chunk_size - chunk_offset;
 			u64 strip_offset    = chunk_offset + (stripe_num * chunk_size);
 			u64 strip_dax_ofs   = fei->se_strips[strip_num].ext_offset;
+
+			pr_notice("%s: chunk_num=%lld chunk_offset=%lld "
+				  "stripe_num=%lld strip_num=%lld "
+				  "chunk_remainder=%lld strip_offset=%lld "
+				  "strip_dax_offset=%lld\n",
+				  __func__,
+				  chunk_num, chunk_offset, stripe_num, strip_num,
+				  chunk_remainder, strip_offset, strip_offset);
 
 			iomap->addr    = strip_dax_ofs + strip_offset;
 			iomap->offset  = file_offset;
@@ -719,6 +771,7 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 	}
 
  err_out:
+	pr_notice("%s: err_out\n", __func__);
 	/* We fell out the end of the extent list.
 	 * Set iomap to zero length in this case, and return 0
 	 * This just means that the r/w is past EOF
@@ -764,10 +817,11 @@ famfs_meta_to_dax_offset(struct inode *inode, struct iomap *iomap,
 	loff_t local_offset = file_offset;
 	int i;
 
-	if (meta->tfs_extent_type == STRIPED_EXTENT)
-		return famfs_meta_to_dax_offset_v2(inode, iomap, file_offset, len, flags);
 	if (fsi->deverror || famfs_file_invalid(inode))
 		goto err_out;
+
+	if (meta->tfs_extent_type == STRIPED_EXTENT)
+		return famfs_meta_to_dax_offset_v2(inode, iomap, file_offset, len, flags);
 
 	iomap->offset = file_offset;
 
