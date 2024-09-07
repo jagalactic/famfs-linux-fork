@@ -351,7 +351,7 @@ famfs_meta_alloc_v2(
 
 			errs += famfs_check_ext_alignment(&tmp_ext_list[i]);
 
-			pr_notice("%s: devindex=%lld ofs=%lld len=%lld\n",
+			pr_notice("%s: devindex=%lld ofs=0x%llx len=0x%llx\n",
 				  __func__, meta->se[i].dev_index,
 				  meta->se[i].ext_offset, meta->se[i].ext_len);
 
@@ -411,13 +411,16 @@ famfs_meta_alloc_v2(
 			}
 
 			/* XXX */
-			pr_notice("striped ext[%d]: nstrips=%lld chunk_size=%lld "
+			pr_notice("striped ext[%d]: nstrips=%lld "
+				  "chunk_size=0x%llx "
 				  "strip_list_size=%ld\n",
-				  i, tmp_ie[i].ie_nstrips, tmp_ie[i].ie_chunk_size,
+				  i, tmp_ie[i].ie_nstrips,
+				  tmp_ie[i].ie_chunk_size,
 				  strip_list_size);
 
 			/* Allocate meta->stripe */
-			meta->ie = kcalloc(nstrips, sizeof(*(meta->ie)), GFP_KERNEL);
+			meta->ie = kcalloc(nstrips, sizeof(*(meta->ie)),
+					   GFP_KERNEL);
 			if (!meta->ie) {
 				rc = -ENOMEM;
 				goto errout;
@@ -427,7 +430,8 @@ famfs_meta_alloc_v2(
 
 			/* Allocate meta->stripe->strips */
 			meta->ie[i].ie_strips = kcalloc(tmp_ie[i].ie_nstrips,
-					sizeof(meta->ie[i].ie_strips[0]), GFP_KERNEL);
+					sizeof(meta->ie[i].ie_strips[0]),
+							GFP_KERNEL);
 			if (!meta->ie[i].ie_strips) {
 				rc = -ENOMEM;
 				goto errout;
@@ -439,7 +443,8 @@ famfs_meta_alloc_v2(
 				u64 len      = tmp_ext_list[j].len;
 
 				/* XXX */
-				pr_notice("  strip[%d]: ofs=0x%llx len=0x%llx\n",
+				pr_notice("  strip[%d]: "
+					  "ofs=0x%llx len=0x%llx\n",
 					  j, offset, len);
 
 				errs += famfs_check_ext_alignment(&tmp_ext_list[j]);
@@ -750,10 +755,10 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 			u64 strip_offset    = chunk_offset + (stripe_num * chunk_size);
 			u64 strip_dax_ofs   = fei->ie_strips[strip_num].ext_offset;
 
-			pr_notice("%s: chunk_num=%lld chunk_offset=%lld "
+			pr_notice("%s: chunk_num=%lld chunk_offset=0x%llx "
 				  "stripe_num=%lld strip_num=%lld "
-				  "chunk_remainder=%lld strip_offset=%lld "
-				  "strip_dax_offset=%lld\n",
+				  "chunk_remainder=0x%llx strip_offset=0x%llx "
+				  "strip_dax_offset=0x%llx\n",
 				  __func__,
 				  chunk_num, chunk_offset, stripe_num, strip_num,
 				  chunk_remainder, strip_offset, strip_offset);
