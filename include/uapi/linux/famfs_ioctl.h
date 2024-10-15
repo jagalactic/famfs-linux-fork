@@ -82,7 +82,7 @@ struct famfs_ioc_fmap {
 	__u32 fioc_ext_type; /* enum famfs_log_ext_type */
 	union {  /* Make code a little more readable */
 		__u32 fioc_nextents;
-		__u32 fioc_nstripes;
+		__u32 fioc_niext;
 	};
 	union {
 		struct famfs_ioc_simple_extent *kse;     /* simple extent list */
@@ -101,7 +101,7 @@ struct famfs_ioc_fmap {
 			struct famfs_ioc_simple_extent *kse;     /* simple extent list */
 		};
 		struct {
-			__u32 fioc_nstripes;
+			__u32 fioc_niext;
 			struct famfs_ioc_interleaved_ext *kie; /* interleaved ext list */
 		};
 	};
