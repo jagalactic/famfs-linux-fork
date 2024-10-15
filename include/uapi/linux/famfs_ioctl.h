@@ -25,7 +25,7 @@
 /* We anticipate the possiblity of supporting additional types of extents */
 enum famfs_extent_type {
 	SIMPLE_DAX_EXTENT,
-	STRIPED_EXTENT,
+	INTERLEAVED_EXTENT,
 	INVALID_EXTENT_TYPE,
 };
 
@@ -71,9 +71,11 @@ struct famfs_ioc_simple_extent {
 struct famfs_ioc_interleaved_ext {
 	__u64 ie_nstrips;
 	__u64 ie_chunk_size;
+	__u64 ie_nbytes;     /* Total bytes for this interleaved_ext; sum of strips may be more */
 	struct famfs_ioc_simple_extent *ie_strips;
 };
 
+#if 0
 struct famfs_ioc_fmap {
 	__u64 fioc_file_size;
 	enum famfs_file_type fioc_file_type;
@@ -85,9 +87,26 @@ struct famfs_ioc_fmap {
 	union {
 		struct famfs_ioc_simple_extent *kse;     /* simple extent list */
 		struct famfs_ioc_interleaved_ext *kie; /* interleaved ext list */
-		/* will include the other extent types eventually */
+		/* Might include other extent types eventually */
 	};
 };
+#else
+struct famfs_ioc_fmap {
+	__u64 fioc_file_size;
+	enum famfs_file_type fioc_file_type;
+	__u32 fioc_ext_type; /* enum famfs_log_ext_type */
+	union {  /* Make code a little more readable */
+		struct {
+			__u32 fioc_nextents;
+			struct famfs_ioc_simple_extent *kse;     /* simple extent list */
+		};
+		struct {
+			__u32 fioc_nstripes;
+			struct famfs_ioc_interleaved_ext *kie; /* interleaved ext list */
+		};
+	};
+};
+#endif
 
 /**
  * struct famfs_ioc_get_fmap
@@ -95,8 +114,8 @@ struct famfs_ioc_fmap {
  * This structure is a defined size, and can be used to copyout the file map, subject
  * to the following constraints:
  * * No more than FAMFS_MAX_STRIPS simple extents
- * * No moer than one striped extent
- * * Striped extent contains no more tahn FAMFS_MAX_EXTENTS strip extents
+ * * No more than one striped extent
+ * * Striped extent contains no more than FAMFS_MAX_EXTENTS strip extents
  */
 struct famfs_ioc_get_fmap {
 	struct famfs_ioc_fmap iocmap;

@@ -22,8 +22,9 @@ struct famfs_meta_simple_ext {
 };
 
 struct famfs_meta_interleaved_ext {
-	u64 ie_nstrips;
-	u64 ie_chunk_size;
+	u64 fie_nstrips;
+	u64 fie_chunk_size;
+	u64 fie_nbytes;
 	struct famfs_meta_simple_ext *ie_strips;
 };
 

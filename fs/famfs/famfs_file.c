@@ -58,7 +58,7 @@ famfs_meta_free(struct famfs_file_meta *map)
 		case SIMPLE_DAX_EXTENT:
 			kfree(map->se);
 			break;
-		case STRIPED_EXTENT:
+		case INTERLEAVED_EXTENT:
 			if (map->ie)
 				kfree(map->ie->ie_strips);
 
@@ -223,8 +223,8 @@ dump_ioc_fmap(struct famfs_ioc_fmap *fmap)
 	case SIMPLE_DAX_EXTENT:
 		ext_type_str = "SIMPLE_DAX_EXTENT";
 		break;
-	case STRIPED_EXTENT:
-		ext_type_str = "STRIPED_EXTENT";
+	case INTERLEAVED_EXTENT:
+		ext_type_str = "INTERLRAVED_EXTENT";
 		break;
 	default:
 		ext_type_str = "INVALID_EXTENT_TYPE";
@@ -253,7 +253,7 @@ famfs_dump_meta(
 				  j, ext->dev_index, ext->ext_offset, ext->ext_len);
 		}
 		break;
-	case STRIPED_EXTENT:
+	case INTERLEAVED_EXTENT:
 		for (i = 0; i < meta->fm_nstripes; i++) {
 			pr_notice("\tstripe %d strips\n", i);
 			for (j = 0; j < meta->ie[i].ie_nstrips; j++) {
@@ -356,10 +356,11 @@ famfs_meta_alloc_v2(
 		break;
 	}
 
-	case STRIPED_EXTENT: {
+	case INTERLEAVED_EXTENT: {
 		struct famfs_ioc_interleaved_ext
 			tmp_ie[FAMFS_IOC_MAX_INTERLEAVED_EXTENTS];
 		struct famfs_ioc_simple_extent tmp_ext_list[FAMFS_MAX_STRIPS];
+		s64 size_remainder = meta->file_size;
 		int nstripes = fmap->fioc_nstripes;
 
 		if (nstripes > FAMFS_IOC_MAX_INTERLEAVED_EXTENTS) {
@@ -413,8 +414,9 @@ famfs_meta_alloc_v2(
 				rc = -ENOMEM;
 				goto errout;
 			}
-			meta->ie[i].ie_chunk_size = tmp_ie[i].ie_chunk_size;
-			meta->ie[i].ie_nstrips    = tmp_ie[i].ie_nstrips;
+			meta->ie[i].fie_chunk_size = tmp_ie[i].ie_chunk_size;
+			meta->ie[i].fie_nstrips    = tmp_ie[i].ie_nstrips;
+			meta->ie[i].fie_nbytes     = tmp_ie[i].ie_nbytes;
 
 			/* Allocate meta->stripe->strips */
 			meta->ie[i].ie_strips = kcalloc(tmp_ie[i].ie_nstrips,
@@ -437,6 +439,14 @@ famfs_meta_alloc_v2(
 				meta->ie[i].ie_strips[j].ext_len    = len;
 				extent_total += len;
 			}
+			size_remainder -= tmp_ie[i].ie_nbytes;
+		}
+
+		if (size_remainder > 0) {
+			/* Sum of interleaved extent sizes is less than file size! */
+			pr_err("%s: size_remainder %lld\n", __func__, size_remainder);
+			rc = -EINVAL;
+			goto errout;
 		}
 		
 		break;
@@ -563,10 +573,11 @@ famfs_prepare_getmap_v2(
 			return -EINVAL;
 
 		ifmap->iocmap.fioc_nstripes  = meta->fm_nstripes;
-		ifmap->ks.ikie.ie_nstrips = meta->ie->ie_nstrips;
-		ifmap->ks.ikie.ie_chunk_size = meta->ie->ie_chunk_size;
+		ifmap->ks.ikie.ie_nstrips = meta->ie->fie_nstrips;
+		ifmap->ks.ikie.ie_chunk_size = meta->ie->fie_chunk_size;
+		ifmap->ks.ikie.ie_nbytes = meta->ie->fie_nbytes;
 
-		for (i = 0; i < meta->ie->ie_nstrips; i++) {
+		for (i = 0; i < meta->ie->fie_nstrips; i++) {
 			struct famfs_meta_simple_ext *strips = meta->ie->ie_strips;
 
 			ifmap->ks.kie_strips[i].devindex = strips[i].dev_index;
@@ -694,10 +705,10 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 	struct famfs_fs_info  *fsi = inode->i_sb->s_fs_info;
 	struct famfs_file_meta *meta = inode->i_private;
 	loff_t local_offset = file_offset;
-	int i, j;
+	int i;
 
-	/* This function is only for extent_type STRIPED_EXTENT */
-	if (meta->fm_extent_type != STRIPED_EXTENT) {
+	/* This function is only for extent_type INTERLEAVED_EXTENT */
+	if (meta->fm_extent_type != INTERLEAVED_EXTENT) {
 		pr_err("%s: bad extent type\n", __func__);
 		goto err_out;
 	}
@@ -710,12 +721,9 @@ famfs_meta_to_dax_offset_v2(struct inode *inode, struct iomap *iomap,
 	for (i = 0; i < meta->fm_nstripes; i++) {
 		/* TODO: check devindex too */
 		struct famfs_meta_interleaved_ext *fei = &meta->ie[i];
-		u64 chunk_size = fei->ie_chunk_size;
-		u64 nstrips = fei->ie_nstrips;
-		u64 ext_size = 0;
-
-		for (j = 0; j < nstrips; j++)
-			ext_size += fei->ie_strips[j].ext_len;
+		u64 chunk_size = fei->fie_chunk_size;
+		u64 nstrips = fei->fie_nstrips;
+		u64 ext_size = fei->fie_nbytes;
 
 		ext_size = min_t(u64, ext_size, meta->file_size);
 
@@ -794,7 +802,7 @@ famfs_meta_to_dax_offset(struct inode *inode, struct iomap *iomap,
 	if (fsi->deverror || famfs_file_invalid(inode))
 		goto err_out;
 
-	if (meta->fm_extent_type == STRIPED_EXTENT)
+	if (meta->fm_extent_type == INTERLEAVED_EXTENT)
 		return famfs_meta_to_dax_offset_v2(inode, iomap, file_offset, len, flags);
 
 	iomap->offset = file_offset;
